@@ -2,6 +2,13 @@
 
 # atomno-mcp-sudact
 
+[![Glama](https://img.shields.io/badge/Glama-listed-7c3aed.svg)](https://glama.ai/mcp/servers/atomno-mcp/mcp-sudact)
+
+<a href="https://glama.ai/mcp/servers/atomno-mcp/mcp-sudact">
+  <img width="380" height="200" src="https://glama.ai/mcp/servers/atomno-mcp/mcp-sudact/badge" alt="mcp-sudact MCP server" />
+</a>
+
+
 [![PyPI](https://img.shields.io/pypi/v/atomno-mcp-sudact)](https://pypi.org/project/atomno-mcp-sudact/)
 [![License: MIT](https://img.shields.io/badge/license-MIT-green)](./LICENSE)
 [![MCP](https://img.shields.io/badge/MCP-compatible-blue)](https://modelcontextprotocol.io)
