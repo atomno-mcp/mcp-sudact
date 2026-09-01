@@ -2,26 +2,21 @@
 
 # atomno-mcp-sudact
 
+MCP-сервер судебной практики России: ищет судебные решения по тексту, статье закона, суду, инстанции и дате и отдаёт полный текст выбранного дела. Для юристов и юридических компаний — подключается к Cursor, Claude и любому клиенту MCP.
+
+Russian court practice search for AI agents.
+
 [![Glama](https://img.shields.io/badge/Glama-listed-7c3aed.svg)](https://glama.ai/mcp/servers/atomno-mcp/mcp-sudact)
 
 <a href="https://glama.ai/mcp/servers/atomno-mcp/mcp-sudact">
   <img width="380" height="200" src="https://glama.ai/mcp/servers/atomno-mcp/mcp-sudact/badge" alt="mcp-sudact MCP server" />
 </a>
 
-
 [![PyPI](https://img.shields.io/pypi/v/atomno-mcp-sudact)](https://pypi.org/project/atomno-mcp-sudact/)
 [![License: MIT](https://img.shields.io/badge/license-MIT-green)](./LICENSE)
 [![MCP](https://img.shields.io/badge/MCP-compatible-blue)](https://modelcontextprotocol.io)
 
-**Судебная практика РФ для AI-агентов** — Russian court case-law search for AI agents (Cursor, Claude, and any MCP client).
-
-MCP-сервер (Model Context Protocol) для поиска по судебной практике России:
-полнотекстовый поиск по текстам решений — по тексту документа, статье закона, суду,
-инстанции и датам — и получение полного текста решения по выбранному делу.
-
-> Работает через hosted-API atomno-mcp: движок поиска, кэш и анонимизация ПДн —
-> на нашей стороне, вам не нужно ничего парсить или поднимать, данные всегда свежие.
-> Нужен только API-ключ (тариф Pro) —
+> Работает через интернет-сервис atomno-mcp: поиск, кэш и скрытие персональных данных — на нашей стороне, ничего парсить и поднимать не нужно. Нужен только ключ (тариф Pro) —
 > [atomno-mcp.ru/pricing](https://atomno-mcp.ru/pricing#sudact-pro).
 
 ## Быстрый старт
