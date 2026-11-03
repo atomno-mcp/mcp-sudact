@@ -2,78 +2,56 @@
 
 # atomno-mcp-sudact
 
-MCP-сервер судебной практики России: ищет судебные решения по тексту, статье закона, суду, инстанции и дате и отдаёт полный текст выбранного дела. Для юристов и юридических компаний — подключается к Cursor, Claude и любому клиенту MCP.
+MCP-клиент для поиска судебной практики и карточек дел ФАС через подключённый API ATOMNO. Это тонкий клиент, а не собственная полная база судебных решений. Python >=3.11.
 
-Russian court practice search for AI agents.
+## Установка и подключение
 
-[![Glama](https://img.shields.io/badge/Glama-listed-7c3aed.svg)](https://glama.ai/mcp/servers/atomno-mcp/mcp-sudact)
-
-<a href="https://glama.ai/mcp/servers/atomno-mcp/mcp-sudact">
-  <img width="380" height="200" src="https://glama.ai/mcp/servers/atomno-mcp/mcp-sudact/badge" alt="mcp-sudact MCP server" />
-</a>
-
-[![PyPI](https://img.shields.io/pypi/v/atomno-mcp-sudact)](https://pypi.org/project/atomno-mcp-sudact/)
-[![License: MIT](https://img.shields.io/badge/license-MIT-green)](./LICENSE)
-[![MCP](https://img.shields.io/badge/MCP-compatible-blue)](https://modelcontextprotocol.io)
-
-> Работает через интернет-сервис atomno-mcp: поиск, кэш и скрытие персональных данных — на нашей стороне, ничего парсить и поднимать не нужно. Нужен только ключ (тариф Pro) —
-> [atomno-mcp.ru/pricing](https://atomno-mcp.ru/pricing#sudact-pro).
-
-## Быстрый старт
-
-```bash
-pipx install atomno-mcp-sudact
-# или: uvx atomno-mcp-sudact
+```sh
+pip install atomno-mcp-sudact
+atomno-mcp-sudact --help
+atomno-mcp-sudact --version
 ```
 
-## Конфигурация (env vars)
-
-| Переменная | Описание | Где взять | Обязательна |
-|---|---|---|---|
-| `MCP_SUDACT_TOKEN` | API-ключ (заголовок `X-API-Key`) | [atomno-mcp.ru/pricing](https://atomno-mcp.ru/pricing#sudact-pro) | да |
-| `MCP_SUDACT_API_BASE` | Базовый URL бэкенда | по умолчанию прод | нет |
-| `MCP_SUDACT_TIMEOUT` | Таймаут HTTP, сек (default 60) | — | нет |
-
-## Использование в Cursor (`mcp.json`)
+Для подключения используйте ключ и адрес активированной услуги из кабинета/инструкции. Ключ задаётся переменной `MCP_SUDACT_TOKEN`, адрес — `MCP_SUDACT_API_BASE`. По умолчанию адрес `https://api.atomno-mcp.ru/sudact`; конкретный доступ и подключённые источники определяет услуга. `MCP_SUDACT_TIMEOUT` задаёт HTTP-таймаут в секундах (по умолчанию 60).
 
 ```json
-{
-  "mcpServers": {
-    "sudact": {
-      "command": "uvx",
-      "args": ["atomno-mcp-sudact"],
-      "env": { "MCP_SUDACT_TOKEN": "ваш-ключ" }
-    }
-  }
-}
+{"mcpServers":{"sudact":{"command":"atomno-mcp-sudact","env":{"MCP_SUDACT_TOKEN":"YOUR_API_KEY","MCP_SUDACT_API_BASE":"https://api.atomno-mcp.ru/sudact"}}}}
 ```
 
-## Использование в Claude Desktop (`claude_desktop_config.json`)
+Не сохраняйте настоящий ключ в репозитории. Получение ключа не означает автоматическое подключение всех источников.
 
-```json
-{
-  "mcpServers": {
-    "sudact": {
-      "command": "uvx",
-      "args": ["atomno-mcp-sudact"],
-      "env": { "MCP_SUDACT_TOKEN": "ваш-ключ" }
-    }
-  }
-}
+## Инструменты
+
+- `search_cases`: текст от 3 символов, `court_type=any|vs|arbitr|soyu|ks|fas`, только `instance=any`, статьи `norms`, даты `YYYY-MM-DD`, `limit=1..50`. Исходные поля, предупреждения, provenance и сведения о лимитах сохраняются.
+- `search_fas_decisions`: карточки ФАС; текст, орган `body`, закон `law` (44-ФЗ/223-ФЗ/135-ФЗ/38-ФЗ), вид акта `act_type`, даты, лимит. Передаётся `/v1/search` с `court_type=fas`. Карточка не обязательно содержит полный текст решения.
+- `get_citation`: `url` или `case_id` из выдачи, `include_full_text`, `anonymize_level=none|physical_persons|all_persons`. Наличие полного текста и результат анонимизации определяет backend.
+
+У `search_cases` есть соответствующие поля `fas_body`, `fas_law`, `fas_act_type`, допустимые только для `any/fas`. Виды актов: решение, предписание, постановление, постановление о штрафе, определение, предупреждение, жалоба, уведомление.
+
+`page=1..5` допустим только для одного раздела `vs/arbitr/soyu/ks`, без фильтров ФАС, при `page*limit<=50`. Такой запрос не смешивает корпуса и fallback. Обёртка проверки норм на конкретной услуге может отклонить page с 422 — в этом случае запросите без page. Клиент не отключает серверную проверку норм.
+
+`source` и `collegium` не являются подтверждёнными фильтрами действующего REST-контракта и не экспортируются. Поле source в ответе — происхождение записи. Разделы `soyu/ks`, выбор ФАС и установленный клиент не гарантируют права на все источники, полный корпус или свежесть всех данных.
+
+## Ошибки и учёт
+
+Пустая успешная выдача отличается от ошибки источника. 401/403/429/5xx сохраняются как backend_error со статусом; таймаут/сетевая ошибка — unavailable. Ошибочный/необъектный JSON не становится пустым результатом. Отсутствующий ключ — missing_token, неправильный ключ не называется отсутствующим.
+
+Каждый вызов выполняет **одну попытку POST**. Автоматического повтора при timeout, 429 или 502–504 нет: повтор может быть новым учитываемым запросом. Таймаут не доказывает, что сервер не учёл обращение; клиент не обещает возврат квоты. Права и учёт определяет действующая услуга.
+
+## Запуск
+
+По умолчанию — stdio. Поддерживаются `--transport/-t stdio|http|sse|streamable-http`, `--host`, `--port`, `--log-level/-l DEBUG|INFO|WARNING|ERROR|CRITICAL`, `--version/-V`. Для HTTP-транспортов по умолчанию используются 127.0.0.1:8000; публичное размещение требует отдельной настройки доступа. Уровень CLI имеет приоритет над `MCP_SUDACT_LOG_LEVEL`; неправильный уровень — ошибка запуска. Баннер не попадает в stdio.
+
+## Разработка
+
+```sh
+pip install -e ".[dev,release]"
+ruff check .
+pytest --cov=atomno_mcp_sudact --cov-fail-under=85
+python -m build
+python -m twine check dist/*
 ```
 
-## Тулзы
+Тесты используют изолированные HTTP-ответы, а не доказывают работу production или платного клиентского доступа. MIT распространяется на клиентский код; условия источников и услуги определяются отдельно.
 
-| Тул | Вход | Выход | Описание |
-|---|---|---|---|
-| `search_cases` | `query`, `court_type`, `instance`, `norms`, `date_from`, `date_to`, `limit` | `total_found` + список дел (`case_id`, `url`, …) | Полнотекстовый поиск как на sudact.ru |
-| `get_citation` | `url` \| `case_id`, `include_full_text`, `anonymize_level` | Полный текст решения (+ опц. анонимизация) | Полный текст решения по карточке/ id |
-
-## Disclaimer
-
-Проект не аффилирован с sudact.ru. Данные — из открытых источников; используете на свой риск.
-Полнотекстовый доступ предоставляется как hosted-сервис по подписке.
-
-## Лицензия
-
-MIT — см. [LICENSE](./LICENSE).
+[Документация](https://atomno-mcp.ru/mcp/sudact) · [Ошибки](https://github.com/atomno-mcp/mcp-sudact/issues) · [Изменения](CHANGELOG.md)

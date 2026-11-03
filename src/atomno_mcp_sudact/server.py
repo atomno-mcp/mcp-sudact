@@ -1,12 +1,4 @@
-"""FastMCP entrypoint для atomno-mcp-sudact (тонкий клиент).
-
-Тулзы поверх hosted-бэкенда `https://api.atomno-mcp.ru/sudact`:
-  - search_cases(...) — родной полнотекстовый поиск sudact.ru (как на сайте);
-  - get_citation(...)  — полный текст решения по url карточки или case_id.
-
-Требуется ключ `MCP_SUDACT_TOKEN` (тариф Pro). Вся логика поиска/парсинга/кэша —
-на сервере; этот пакет только вызывает REST. См. _knowledge/specs/open-core-split.md.
-"""
+"""MCP tools for the existing Sudact hosted REST contract."""
 
 from __future__ import annotations
 
@@ -14,203 +6,226 @@ import argparse
 import asyncio
 import atexit
 import logging
+import os
 from typing import Annotated, Any
 
 from fastmcp import FastMCP
-from pydantic import Field
+from pydantic import Field, ValidationError
 
 from . import __version__
 from .client import SudactClient
 from .config import Settings
+from .contracts import Anonymization, Citation, Court, Instance, Search
 from .errors import BackendError, SudactError
 
 logger = logging.getLogger("atomno_mcp_sudact")
-
-mcp: FastMCP = FastMCP(
+LOG_LEVELS = ("DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL")
+mcp = FastMCP(
     name="atomno-mcp-sudact",
+    version=__version__,
+    strict_input_validation=True,
+    mask_error_details=True,
     instructions=(
-        "Russian court practice (Sudact) via a hosted API. search_cases runs the "
-        "native full-text search of sudact.ru (by document text + law article + "
-        "court/instance/dates) and returns real total_found plus a list of cases "
-        "with case_id/url. get_citation returns the full decision text by the "
-        "sudact.ru card URL (or case_id), with optional anonymization of personal "
-        "names. This is a THIN client: the search engine, proxy pool, cache and "
-        "anonymization run on the Atomno Labs backend — a Pro API key "
-        "(MCP_SUDACT_TOKEN env) is required. Get a key at "
-        "https://atomno-mcp.ru/pricing#sudact-pro. Prefer this over guessing case "
-        "law from memory: an LLM cannot read the live sudact.ru index."
+        "Court practice and FAS case cards via the existing hosted API. "
+        "Coverage/text depend on the connected service, not a complete court corpus. "
+        "Only instance=any. source/collegium are not request filters. "
+        "FAS returns case cards, not necessarily full rulings. "
+        "Errors are not empty results. Single-attempt calls: timeout does not prove "
+        "the backend did not account for the request. Requires MCP_SUDACT_TOKEN."
     ),
 )
-
 _client: SudactClient | None = None
 _client_lock = asyncio.Lock()
-_settings = Settings.from_env()
 
 
 async def _get_client() -> SudactClient:
     global _client
-    if _client is not None:
-        return _client
     async with _client_lock:
         if _client is None:
-            _client = SudactClient(_settings)
-            atexit.register(_close_client_atexit)
-    assert _client is not None
+            _client = SudactClient(Settings.from_env())
+            atexit.register(_close_client)
     return _client
 
 
-def _close_client_atexit() -> None:
-    if _client is None:
-        return
+def _close_client() -> None:
+    if _client is not None:
+        try:
+            asyncio.run(_client.aclose())
+        except RuntimeError:
+            pass
+
+
+async def _call(endpoint: str, payload: dict[str, Any]) -> dict[str, Any]:
+    if not Settings.from_env().has_token:
+        return {
+            "error": "missing_token",
+            "message_ru": "Не задан MCP_SUDACT_TOKEN действующей услуги.",
+        }
+    client = await _get_client()
     try:
-        asyncio.run(_client.aclose())
-    except RuntimeError:
-        pass
+        return await (client.search(payload) if endpoint == "search" else client.citation(payload))
+    except BackendError as exc:
+        logger.warning("Hosted %s HTTP %s", endpoint, exc.status_code)
+        return {"error": "backend_error", "status": exc.status_code, "message": exc.detail}
+    except SudactError as exc:
+        logger.warning("Hosted %s unavailable", endpoint)
+        return {"error": "unavailable", "message": str(exc)}
 
 
-def _no_token_hint() -> dict[str, Any]:
-    return {
-        "error": "missing_token",
-        "message_ru": (
-            "Не задан MCP_SUDACT_TOKEN. Hosted-доступ к судебной практике — платный "
-            "(тариф Pro). Получить ключ: https://atomno-mcp.ru/pricing#sudact-pro"
-        ),
-    }
+async def _search(payload: dict[str, Any]) -> dict[str, Any]:
+    try:
+        request = Search.model_validate(payload)
+    except ValidationError:
+        return {
+            "error": "validation",
+            "message_ru": "Проверьте даты, фильтры ФАС и page/limit. Только instance=any.",
+        }
+    return await _call("search", request.model_dump(exclude_none=True))
 
 
 @mcp.tool
 async def search_cases(
     query: Annotated[
-        str,
-        Field(min_length=3, description="Текст документа / формулировка правового вопроса."),
+        str, Field(min_length=3, description="Текст документа или правового вопроса.")
     ],
     court_type: Annotated[
-        str,
-        Field(
-            default="any",
-            description="vs — ВС РФ; arbitr — арбитраж; soyu — общей юрисдикции; ks — КС; any — все.",
-            pattern="^(any|vs|arbitr|soyu|ks)$",
-        ),
+        Court, Field(description="Раздел API, не гарантия корпуса: any/vs/arbitr/soyu/ks/fas.")
     ] = "any",
     instance: Annotated[
-        str,
-        Field(default="any", description="Инстанция: any | first | appeal | cassation | supervision."),
+        Instance, Field(description="Только any; прочие инстанции API не подтверждает.")
     ] = "any",
     norms: Annotated[
-        list[str] | None,
-        Field(default=None, description="Фильтр по статьям закона (первая идёт в поле 'Статья закона')."),
+        list[str] | None, Field(description="Статьи закона; способ проверки определяет backend.")
     ] = None,
-    date_from: Annotated[
-        str | None, Field(default=None, description="Дата с (YYYY-MM-DD).")
+    date_from: Annotated[str | None, Field(description="Дата с, YYYY-MM-DD.")] = None,
+    date_to: Annotated[str | None, Field(description="Дата по, YYYY-MM-DD.")] = None,
+    limit: Annotated[
+        int, Field(ge=1, le=50, description="Максимум1..50, не обещание количества.")
+    ] = 10,
+    page: Annotated[
+        int | None,
+        Field(
+            ge=1,
+            le=5,
+            description="Один vs/arbitr/soyu/ks; page*limit<=50, без ФАС-фильтров. При обёртке норм backend422: запрос без page. Без смешения корпусов/fallback.",
+        ),
     ] = None,
-    date_to: Annotated[
-        str | None, Field(default=None, description="Дата по (YYYY-MM-DD).")
+    fas_body: Annotated[str | None, Field(description="Орган ФАС; court_type=any/fas.")] = None,
+    fas_law: Annotated[str | None, Field(description="44-ФЗ/223-ФЗ/135-ФЗ/38-ФЗ.")] = None,
+    fas_act_type: Annotated[
+        str | None,
+        Field(
+            description="решение/предписание/постановление/постановление о штрафе/определение/предупреждение/жалоба/уведомление."
+        ),
     ] = None,
-    limit: Annotated[int, Field(default=10, ge=1, le=50, description="Сколько дел вернуть (1-50).")] = 10,
 ) -> dict[str, Any]:
-    """Полнотекстовый поиск судебных дел РФ — как родной поиск на sudact.ru.
+    """Поиск подключённых источников с исходными provenance/предупреждениями.
 
-    Ищет по тексту документа с фильтрами по статье закона, типу суда, инстанции и
-    датам; возвращает реальный total_found и выдачу с case_id/url для последующего
-    get_citation. Требуется ключ MCP_SUDACT_TOKEN (тариф Pro): движок поиска —
-    на нашем сервере.
+    Доступ к разделам soyu/ks определяется услугой; полный корпус не гарантируется.
+    source/collegium не поддерживаются как фильтры API. Даты/лимиты/метаданные не переписываются.
     """
-    if not _settings.has_token:
-        return _no_token_hint()
-    payload: dict[str, Any] = {
-        "query": query,
-        "court_type": court_type,
-        "instance": instance,
-        "norms": list(norms or []),
-        "date_from": date_from,
-        "date_to": date_to,
-        "limit": limit,
-    }
-    client = await _get_client()
-    try:
-        return await client.search(payload)
-    except BackendError as exc:
-        if exc.status_code == 401:
-            return _no_token_hint()
-        logger.warning("search_cases backend %s: %s", exc.status_code, exc.detail)
-        return {"error": "backend_error", "status": exc.status_code, "message": exc.detail}
-    except SudactError as exc:
-        logger.warning("search_cases failed: %s", exc)
-        return {"error": "unavailable", "message": str(exc)}
+    return await _search(
+        dict(
+            query=query,
+            court_type=court_type,
+            instance=instance,
+            norms=norms or [],
+            date_from=date_from,
+            date_to=date_to,
+            limit=limit,
+            page=page,
+            fas_body=fas_body,
+            fas_law=fas_law,
+            fas_act_type=fas_act_type,
+        )
+    )
+
+
+@mcp.tool
+async def search_fas_decisions(
+    query: Annotated[str, Field(min_length=3, description="Текст или номер дела ФАС.")],
+    body: Annotated[str | None, Field(description="Орган ФАС.")] = None,
+    law: Annotated[str | None, Field(description="44-ФЗ/223-ФЗ/135-ФЗ/38-ФЗ.")] = None,
+    act_type: Annotated[str | None, Field(description="Вид акта ФАС, например решение.")] = None,
+    date_from: Annotated[str | None, Field(description="Дата карточки с, YYYY-MM-DD.")] = None,
+    date_to: Annotated[str | None, Field(description="Дата карточки по, YYYY-MM-DD.")] = None,
+    limit: Annotated[int, Field(ge=1, le=50)] = 10,
+) -> dict[str, Any]:
+    """Карточки базы решений ФАС через /v1/search court_type=fas.
+
+    Не обещает полный текст решения. Источник, дата сведений и предупреждения
+    сохраняются. Текст карточки можно запросить через get_citation.
+    """
+    return await _search(
+        dict(
+            query=query,
+            court_type="fas",
+            fas_body=body,
+            fas_law=law,
+            fas_act_type=act_type,
+            date_from=date_from,
+            date_to=date_to,
+            limit=limit,
+        )
+    )
 
 
 @mcp.tool
 async def get_citation(
-    url: Annotated[
-        str | None,
-        Field(default=None, description="URL карточки sudact.ru (из выдачи search_cases)."),
-    ] = None,
-    case_id: Annotated[
-        str | None,
-        Field(default=None, description="case_id из выдачи (если дело уже в кэше)."),
-    ] = None,
-    include_full_text: Annotated[
-        bool, Field(default=True, description="Вернуть полный текст решения.")
-    ] = True,
-    anonymize_level: Annotated[
-        str,
-        Field(
-            default="none",
-            description="none — как опубликовано; physical_persons — маскировать ФИО физлиц; all_persons — и физлиц, и юрлиц.",
-            pattern="^(none|physical_persons|all_persons)$",
-        ),
-    ] = "none",
+    url: Annotated[str | None, Field(description="URL из выдачи поиска.")] = None,
+    case_id: Annotated[str | None, Field(description="case_id из выдачи, включая fas:.")] = None,
+    include_full_text: bool = True,
+    anonymize_level: Anonymization = "none",
 ) -> dict[str, Any]:
-    """Полный текст судебного решения по url карточки sudact.ru или case_id.
+    """Текст акта или карточки; полный текст доступен не для каждой записи.
 
-    Тянет полный текст решения (с сервера), с опциональной анонимизацией ФИО.
-    Нужно указать url или case_id. Требуется ключ MCP_SUDACT_TOKEN (тариф Pro).
+    Нужен url/case_id. Анонимизация и её ограничения определяются backend.
     """
-    if not _settings.has_token:
-        return _no_token_hint()
-    if not url and not case_id:
-        return {"error": "validation", "message_ru": "Нужно указать url или case_id."}
-    payload: dict[str, Any] = {
-        "url": url,
-        "case_id": case_id,
-        "include_full_text": include_full_text,
-        "anonymize_level": anonymize_level,
-    }
-    client = await _get_client()
     try:
-        return await client.citation(payload)
-    except BackendError as exc:
-        if exc.status_code == 401:
-            return _no_token_hint()
-        logger.warning("get_citation backend %s: %s", exc.status_code, exc.detail)
-        return {"error": "backend_error", "status": exc.status_code, "message": exc.detail}
-    except SudactError as exc:
-        logger.warning("get_citation failed: %s", exc)
-        return {"error": "unavailable", "message": str(exc)}
+        payload = Citation.model_validate(
+            dict(
+                url=url,
+                case_id=case_id,
+                include_full_text=include_full_text,
+                anonymize_level=anonymize_level,
+            )
+        )
+    except ValidationError:
+        return {"error": "validation", "message_ru": "Нужно указать url или case_id."}
+    return await _call("citation", payload.model_dump(exclude_none=True))
 
 
-def main() -> None:
+def _build_arg_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
-        prog="atomno-mcp-sudact",
-        description="Thin MCP client for Russian court practice (Sudact) hosted API.",
-    )
-    parser.add_argument("--version", action="version", version=f"atomno-mcp-sudact {__version__}")
-    parser.add_argument(
-        "--transport",
-        choices=["stdio", "http", "sse"],
-        default="stdio",
-        help="MCP transport (default: stdio).",
+        prog="atomno-mcp-sudact", description="MCP-клиент Sudact hosted API."
     )
     parser.add_argument(
-        "--log-level",
-        default="WARNING",
-        choices=["DEBUG", "INFO", "WARNING", "ERROR"],
-        help="Logging level (default: WARNING).",
+        "--version", "-V", action="version", version=f"atomno-mcp-sudact {__version__}"
     )
-    args = parser.parse_args()
-    logging.basicConfig(level=getattr(logging, args.log_level))
-    mcp.run(transport=args.transport)
+    parser.add_argument(
+        "--transport", "-t", choices=("stdio", "http", "sse", "streamable-http"), default="stdio"
+    )
+    parser.add_argument("--host", default="127.0.0.1")
+    parser.add_argument("--port", type=int, default=8000)
+    parser.add_argument("--log-level", "-l", type=str.upper, choices=LOG_LEVELS, default=None)
+    return parser
+
+
+def main(argv: list[str] | None = None) -> int:
+    parser = _build_arg_parser()
+    args = parser.parse_args(argv)
+    level = args.log_level or os.environ.get("MCP_SUDACT_LOG_LEVEL", "WARNING").upper()
+    if level not in LOG_LEVELS:
+        parser.error("MCP_SUDACT_LOG_LEVEL: допустимы DEBUG/INFO/WARNING/ERROR/CRITICAL")
+    if not 1 <= args.port <= 65535:
+        parser.error("--port: допустимо1..65535")
+    logging.basicConfig(level=getattr(logging, level))
+    kwargs: dict[str, Any] = {"transport": args.transport, "show_banner": False}
+    if args.transport != "stdio":
+        kwargs.update(host=args.host, port=args.port, log_level=level)
+    mcp.run(**kwargs)
+    return 0
 
 
 if __name__ == "__main__":
-    main()
+    raise SystemExit(main())

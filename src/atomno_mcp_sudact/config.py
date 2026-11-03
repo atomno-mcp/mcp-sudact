@@ -22,7 +22,7 @@ class Settings:
     timeout: float
 
     @classmethod
-    def from_env(cls) -> "Settings":
+    def from_env(cls) -> Settings:
         base = (os.environ.get("MCP_SUDACT_API_BASE") or DEFAULT_API_BASE).rstrip("/")
         token = os.environ.get("MCP_SUDACT_TOKEN") or None
         try:

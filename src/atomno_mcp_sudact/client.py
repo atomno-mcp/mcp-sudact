@@ -1,8 +1,4 @@
-"""HTTP-клиент к hosted-бэкенду Sudact (api.atomno-mcp.ru/sudact).
-
-Тонкая обёртка над httpx: один общий AsyncClient, заголовок X-API-Key,
-маппинг ошибок в SudactError. Никакой логики поиска/парсинга — только транспорт.
-"""
+"""Single-attempt HTTP transport for the connected Sudact hosted service."""
 
 from __future__ import annotations
 
@@ -43,19 +39,22 @@ class SudactClient:
 
     @staticmethod
     def _parse(resp: httpx.Response, path: str) -> dict[str, Any]:
-        if resp.status_code >= 400:
+        if not 200 <= resp.status_code < 300:
             raise BackendError(resp.status_code, _extract_detail(resp))
         try:
-            return resp.json()
+            value = resp.json()
+            if not isinstance(value, dict):
+                raise ValueError("JSON object required")
+            return value
         except ValueError as exc:
             raise BackendError(resp.status_code, "invalid JSON in response") from exc
 
     async def search(self, payload: dict[str, Any]) -> dict[str, Any]:
-        """POST /v1/search — родной полнотекстовый поиск sudact.ru."""
+        """POST /v1/search; return the connected service response unchanged."""
         return await self._post("/v1/search", payload)
 
     async def citation(self, payload: dict[str, Any]) -> dict[str, Any]:
-        """POST /v1/citation — полный текст решения по url карточки / case_id."""
+        """POST /v1/citation; available text can be a case card or a ruling."""
         return await self._post("/v1/citation", payload)
 
 

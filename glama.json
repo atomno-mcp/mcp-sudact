@@ -4,5 +4,5 @@
     "atomnos"
   ],
   "name": "mcp-sudact",
-  "description": "Russian court practice (Sudact): case search by article, court, dates; full decision text."
+  "description": "Court practice and FAS case cards via hosted API. Coverage depends on the connected service."
 }
