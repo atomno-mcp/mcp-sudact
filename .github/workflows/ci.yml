@@ -1,34 +1,18 @@
-name: CI
-
-on:
-  push:
-    branches: [main]
-  pull_request:
-    branches: [main]
-
-permissions:
-  contents: read
-
+name: client-ci
+on: [push, pull_request]
 jobs:
   test:
     runs-on: ubuntu-latest
     strategy:
-      fail-fast: false
       matrix:
-        python-version: ["3.11", "3.12"]
-
+        python: ['3.11', '3.12']
     steps:
       - uses: actions/checkout@v4
-
       - uses: actions/setup-python@v5
         with:
-          python-version: ${{ matrix.python-version }}
-          cache: pip
-
-      - name: Install package + dev deps
-        run: |
-          python -m pip install --upgrade pip
-          pip install -e ".[dev]"
-
-      - name: Run tests
-        run: pytest -q
+          python-version: ${{ matrix.python }}
+      - run: pip install -e '.[dev,release]'
+      - run: ruff check .
+      - run: pytest --cov=atomno_mcp_sudact --cov-fail-under=85
+      - run: python -m build
+      - run: python -m twine check dist/*

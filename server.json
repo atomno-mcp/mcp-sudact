@@ -2,18 +2,18 @@
   "$schema": "https://static.modelcontextprotocol.io/schemas/2025-12-11/server.schema.json",
   "name": "io.github.atomno-mcp/mcp-sudact",
   "title": "mcp-sudact",
-  "description": "Russian court practice (Sudact): case search by article, court, dates; full decision text.",
+  "description": "Court practice and FAS case cards via hosted API. Coverage depends on the connected service.",
   "repository": {
     "url": "https://github.com/atomno-mcp/mcp-sudact",
     "source": "github"
   },
-  "version": "0.1.8",
+  "version": "0.1.10",
   "packages": [
     {
       "registryType": "pypi",
       "registryBaseUrl": "https://pypi.org",
       "identifier": "atomno-mcp-sudact",
-      "version": "0.1.8",
+      "version": "0.1.10",
       "runtimeHint": "uvx",
       "transport": {
         "type": "stdio"
@@ -21,7 +21,7 @@
       "environmentVariables": [
         {
           "name": "MCP_SUDACT_TOKEN",
-          "description": "API key (Pro tier) for hosted search and document retrieval.",
+          "description": "API key for the activated hosted service; access depends on the service contract.",
           "isRequired": true,
           "isSecret": true
         }

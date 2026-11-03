@@ -82,3 +82,43 @@ async def test_no_token_omits_header() -> None:
         assert "X-API-Key" not in route.calls.last.request.headers
     finally:
         await c.aclose()
+
+
+@pytest.mark.parametrize("status", [429, 502, 503, 504, 302])
+@respx.mock
+async def test_single_attempt_status(client, status):
+    route = respx.post(f"{BASE}/v1/search").mock(
+        return_value=httpx.Response(status, json={"detail": "fixture"})
+    )
+    with pytest.raises(BackendError):
+        await client.search({"query": "тест"})
+    assert route.call_count == 1
+
+
+@respx.mock
+async def test_single_attempt_timeout(client):
+    route = respx.post(f"{BASE}/v1/search").mock(side_effect=httpx.ReadTimeout("fixture"))
+    with pytest.raises(BackendUnavailable):
+        await client.search({"query": "тест"})
+    assert route.call_count == 1
+
+
+@pytest.mark.parametrize("body", ["<html>error</html>", "[]", "null"])
+@respx.mock
+async def test_invalid_json_not_empty(client, body):
+    respx.post(f"{BASE}/v1/search").mock(return_value=httpx.Response(200, text=body))
+    with pytest.raises(BackendError):
+        await client.search({"query": "тест"})
+
+
+@respx.mock
+async def test_preserve_response(client):
+    expected = {
+        "cases": [],
+        "total_found": 0,
+        "warnings": ["source unavailable"],
+        "provenance": {"source": "fas", "date_kind": "card"},
+        "limit_applied": 10,
+    }
+    respx.post(f"{BASE}/v1/search").mock(return_value=httpx.Response(200, json=expected))
+    assert await client.search({"query": "тест"}) == expected
