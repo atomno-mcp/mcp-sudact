@@ -7,13 +7,13 @@
     "url": "https://github.com/atomno-mcp/mcp-sudact",
     "source": "github"
   },
-  "version": "0.1.10",
+  "version": "0.2.0",
   "packages": [
     {
       "registryType": "pypi",
       "registryBaseUrl": "https://pypi.org",
       "identifier": "atomno-mcp-sudact",
-      "version": "0.1.10",
+      "version": "0.2.0",
       "runtimeHint": "uvx",
       "transport": {
         "type": "stdio"
