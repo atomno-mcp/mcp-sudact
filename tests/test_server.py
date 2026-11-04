@@ -63,7 +63,7 @@ async def test_search_validation_and_mapping(monkeypatch):
     out = await server.search_fas_decisions("тест", law="44-ФЗ")
     assert out["warnings"] == ["coverage"]
     assert seen[0][1]["court_type"] == "fas"
-    await server.search_cases("тест", court_type="ks", page=1)
+    await server.search_cases("тест", court_type="soyu", page=1)
     assert seen[-1][1]["page"] == 1
     assert (await server.get_citation())["error"] == "validation"
     await server.get_citation(case_id="fas:test")

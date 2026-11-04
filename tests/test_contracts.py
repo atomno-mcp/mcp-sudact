@@ -28,7 +28,7 @@ def test_invalid(change):
         Search.model_validate({"query": "тест", **change})
 
 
-@pytest.mark.parametrize("section", ["vs", "arbitr", "soyu", "ks"])
+@pytest.mark.parametrize("section", ["vs", "arbitr", "soyu"])
 def test_native_page(section):
     assert Search(query="тест", court_type=section, page=5, limit=10).page == 5
 

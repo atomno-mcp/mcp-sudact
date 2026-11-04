@@ -15,7 +15,7 @@ from pydantic import Field, ValidationError
 from . import __version__
 from .client import SudactClient
 from .config import Settings
-from .contracts import Anonymization, Citation, Court, Instance, Search
+from .contracts import Anonymization, Citation, Court, CourtResolve, Instance, Search
 from .errors import BackendError, SudactError
 
 logger = logging.getLogger("atomno_mcp_sudact")
@@ -28,7 +28,9 @@ mcp = FastMCP(
     instructions=(
         "Court practice and FAS case cards via the existing hosted API. "
         "Coverage/text depend on the connected service, not a complete court corpus. "
-        "Only instance=any. source/collegium are not request filters. "
+        "Use get_search_capabilities for section/filter/pagination support. "
+        "Structured filters stay on Sudact with no fallback or added indexes. "
+        "source/collegium are not request filters. "
         "FAS returns case cards, not necessarily full rulings. "
         "Errors are not empty results. Single-attempt calls: timeout does not prove "
         "the backend did not account for the request. Requires MCP_SUDACT_TOKEN."
@@ -63,7 +65,47 @@ async def _call(endpoint: str, payload: dict[str, Any]) -> dict[str, Any]:
         }
     client = await _get_client()
     try:
-        return await (client.search(payload) if endpoint == "search" else client.citation(payload))
+        structured = endpoint == "resolve_court" or (endpoint == "search" and (
+            any(payload.get(name) for name in ("case_number", "court", "region", "judge"))
+            or payload.get("instance", "any") != "any"
+        ))
+        if structured:
+            # Check each new-style call. Never retain a positive capability across
+            # a backend rollback and never send filters to an extra-ignore API.
+            try:
+                caps = await client.capabilities({})
+            except BackendError as exc:
+                if exc.status_code in (404, 405):
+                    return {"error": "unsupported_backend", "status": exc.status_code,
+                            "message_ru": "Сервер не подтвердил контракт новых фильтров; поисковый POST не отправлен."}
+                raise
+            sections = caps.get("sections")
+            section = sections.get(payload.get("court_type"), {}) if isinstance(sections, dict) else {}
+            section = section if isinstance(section, dict) else {}
+            required = [name for name in ("case_number", "court", "region", "judge") if payload.get(name)]
+            if (caps.get("contract") != "sudact-search-controls-v1" or not section
+                or not isinstance(section.get("filters"), list)
+                or not isinstance(section.get("instance"), list)
+                or any(name not in section.get("filters", []) for name in required)
+                or payload.get("instance", "any") not in section.get("instance", ["any"])
+                or (endpoint == "resolve_court" and not isinstance(caps.get("court_resolver"), dict))
+                or (endpoint == "resolve_court" and not caps["court_resolver"].get("available"))):
+                return {"error": "unsupported_backend",
+                        "message_ru": "Сервер не подтвердил фильтры этого раздела; поисковый POST не отправлен."}
+        result = await getattr(client, endpoint)(payload)
+        if structured:
+            meta = result.get("search_meta")
+            meta = meta if isinstance(meta, dict) else {}
+            applied = meta.get("applied_filters")
+            applied = applied if isinstance(applied, dict) else {}
+            if ((endpoint == "search" and (
+                    meta.get("filter_contract") != "sudact-search-controls-v1"
+                    or any(applied.get(name) != payload[name] for name in required)
+                    or (payload.get("instance", "any") != "any" and applied.get("instance") != payload["instance"])))
+                or (endpoint == "resolve_court" and result.get("capability_contract") != "sudact-search-controls-v1")):
+                return {"error": "incompatible_response", "post_sent": True,
+                        "message_ru": "Ответ не подтвердил контракт фильтров. POST уже отправлен; исход учёта неизвестен, автоматического повтора нет."}
+        return result
     except BackendError as exc:
         logger.warning("Hosted %s HTTP %s", endpoint, exc.status_code)
         return {"error": "backend_error", "status": exc.status_code, "message": exc.detail}
@@ -78,7 +120,7 @@ async def _search(payload: dict[str, Any]) -> dict[str, Any]:
     except ValidationError:
         return {
             "error": "validation",
-            "message_ru": "Проверьте даты, фильтры ФАС и page/limit. Только instance=any.",
+            "message_ru": "Проверьте query/case_number, раздел, фильтры, даты и page/limit. Возможности: get_search_capabilities.",
         }
     return await _call("search", request.model_dump(exclude_none=True))
 
@@ -86,13 +128,13 @@ async def _search(payload: dict[str, Any]) -> dict[str, Any]:
 @mcp.tool
 async def search_cases(
     query: Annotated[
-        str, Field(min_length=3, description="Текст документа или правового вопроса.")
-    ],
+        str, Field(description="Текст от 3 символов; можно опустить при case_number.")
+    ] = "",
     court_type: Annotated[
-        Court, Field(description="Раздел API, не гарантия корпуса: any/vs/arbitr/soyu/ks/fas.")
+        Court, Field(description="Раздел API: any/vs/arbitr/soyu/fas. Полный корпус не гарантируется.")
     ] = "any",
     instance: Annotated[
-        Instance, Field(description="Только any; прочие инстанции API не подтверждает.")
+        Instance, Field(description="first/appeal/cassation/supervision только для soyu, проверяются по форме источника.")
     ] = "any",
     norms: Annotated[
         list[str] | None, Field(description="Статьи закона; способ проверки определяет backend.")
@@ -107,7 +149,7 @@ async def search_cases(
         Field(
             ge=1,
             le=5,
-            description="Один vs/arbitr/soyu/ks; page*limit<=50, без ФАС-фильтров. При обёртке норм backend422: запрос без page. Без смешения корпусов/fallback.",
+            description="Один vs/arbitr/soyu; page*limit<=50, без ФАС-фильтров. При обёртке норм backend422: запрос без page. Без смешения корпусов/fallback.",
         ),
     ] = None,
     fas_body: Annotated[str | None, Field(description="Орган ФАС; court_type=any/fas.")] = None,
@@ -118,15 +160,23 @@ async def search_cases(
             description="решение/предписание/постановление/постановление о штрафе/определение/предупреждение/жалоба/уведомление."
         ),
     ] = None,
+    case_number: Annotated[str | None, Field(description="Отдельный номер дела; один vs/arbitr/soyu, query необязателен.")] = None,
+    court: Annotated[str | None, Field(description="Точное имя суда; только arbitr/soyu.")] = None,
+    region: Annotated[str | None, Field(description="arbitr: судебный округ; soyu: субъект РФ. Точный код или имя текущей формы; значения зависят от раздела.")] = None,
+    judge: Annotated[str | None, Field(description="Судья; один vs/arbitr/soyu.")] = None,
 ) -> dict[str, Any]:
     """Поиск подключённых источников с исходными provenance/предупреждениями.
 
-    Доступ к разделам soyu/ks определяется услугой; полный корпус не гарантируется.
+    Доступ к soyu определяется услугой; ks не подтверждён и отклоняется. Полный корпус не гарантируется.
     source/collegium не поддерживаются как фильтры API. Даты/лимиты/метаданные не переписываются.
     """
     return await _search(
         dict(
             query=query,
+            case_number=case_number,
+            court=court,
+            region=region,
+            judge=judge,
             court_type=court_type,
             instance=instance,
             norms=norms or [],
@@ -139,6 +189,33 @@ async def search_cases(
             fas_act_type=fas_act_type,
         )
     )
+
+
+@mcp.tool
+async def get_search_capabilities() -> dict[str, Any]:
+    """Текущие разделы, поддержка фильтров и доступность page на подключённом сервере."""
+    return await _call("capabilities", {})
+
+
+@mcp.tool
+async def resolve_court_name(
+    name: Annotated[str, Field(min_length=2, description="Полное имя или фрагмент имени суда.")],
+    court_type: Annotated[str, Field(description="Один раздел: arbitr/soyu/vs.")],
+    query: str = "",
+    case_number: str | None = None,
+    limit: Annotated[int, Field(ge=1, le=50)] = 20,
+) -> dict[str, Any]:
+    """Кандидаты судов из ограниченной выборки карточек, с явной неоднозначностью.
+
+    Если query и case_number не заданы, name становится текстовым запросом.
+    Это не полный справочник. Один поиск, обычный учёт вызова и возвращённых карточек.
+    """
+    try:
+        payload = CourtResolve(name=name, court_type=court_type, query=query,
+                               case_number=case_number, limit=limit)
+    except ValidationError:
+        return {"error": "validation", "message_ru": "Проверьте имя, раздел, query/case_number и limit."}
+    return await _call("resolve_court", payload.model_dump(exclude_none=True))
 
 
 @mcp.tool

@@ -57,6 +57,16 @@ class SudactClient:
         """POST /v1/citation; available text can be a case card or a ruling."""
         return await self._post("/v1/citation", payload)
 
+    async def resolve_court(self, payload: dict[str, Any]) -> dict[str, Any]:
+        return await self._post("/v1/resolve-court", payload)
+
+    async def capabilities(self, payload: dict[str, Any]) -> dict[str, Any]:
+        try:
+            response = await self._client.get("/v1/capabilities")
+        except httpx.HTTPError as exc:
+            raise BackendUnavailable("capabilities request failed") from exc
+        return self._parse(response, "/v1/capabilities")
+
 
 def _extract_detail(resp: httpx.Response) -> str:
     try:
